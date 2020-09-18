@@ -24,7 +24,7 @@ services:
       - SITE_URL=http://backend:8000/
       - TREEHERDER_DEBUG=True
       - NEW_RELIC_INSIGHTS_API_KEY=${NEW_RELIC_INSIGHTS_API_KEY:-}
-    #  - PYTHONPATH=/mozci
+      - PYTHONPATH=/mozci
       - MOZCI_CONFIG_PATH=/app/config.toml
     entrypoint: './docker/entrypoint.sh'
     # We *ONLY* initialize the data when we're running the backend
@@ -36,7 +36,7 @@ services:
     shm_size: 2g
     volumes:
       - .:/app
-    #  - ../mozci:/mozci
+      - ../mozci:/mozci
     ports:
       - '8000:8000'
     depends_on:
@@ -89,16 +89,16 @@ services:
     ports:
       - '6379:6379'
 
-#  rabbitmq:
-#    container_name: rabbitmq
-#    # https://hub.docker.com/r/library/rabbitmq/
-#    image: rabbitmq:3.8-alpine
-#    environment:
-#      # Hide INFO and WARNING log levels to reduce log spam.
-#      - 'RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-rabbit log [{console,[{level,error}]}]'
-#    ports:
-#      - '5672:5672'
-#
+  rabbitmq:
+    container_name: rabbitmq
+    # https://hub.docker.com/r/library/rabbitmq/
+    image: rabbitmq:3.8-alpine
+    environment:
+      # Hide INFO and WARNING log levels to reduce log spam.
+      - 'RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-rabbit log [{console,[{level,error}]}]'
+    ports:
+      - '5672:5672'
+
 #  pulse-task-push:
 #    build:
 #      context: .

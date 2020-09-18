@@ -178,6 +178,7 @@ def get_test_failure_jobs(push):
     passing_jobs = Job.objects.filter(
         push=push, job_type__name__in=failed_job_types, result__in=['success', 'unknown']
     ).select_related('job_type', 'machine_platform', 'taskcluster_metadata')
+    guids = [job.guid for job in testfailed_jobs]
 
     jobs = {}
 
@@ -194,7 +195,7 @@ def get_test_failure_jobs(push):
     for job in jobs:
         (jobs[job]).sort(key=lambda x: x['start_time'])
 
-    return jobs
+    return jobs, guids
 
 
 def get_test_failures(
@@ -249,3 +250,99 @@ def get_test_failures(
                 failure['failedInParent'] = failure['key'] in both
 
     return failures
+
+
+def get_test_failures_ci(jobs, guids):
+    # option_map is used to map platforms for the job.option_collection_hash
+    option_map = OptionCollection.objects.get_option_collection_map()
+    print(jobs)
+    print(guids)
+    new_failure_lines = FailureLine.objects.filter(
+        action__in=['test_result', 'log', 'crash'],
+        job_guid__in=guids,
+        job_log__job__result='testfailed',
+    ).select_related(
+        'job_log__job__job_type',
+        'job_log__job__job_group',
+        'job_log__job__machine_platform',
+        'job_log__job__taskcluster_metadata',
+    )
+    # using a dict here to avoid duplicates due to multiple failure_lines for
+    # each job.
+    tests = {}
+    all_failed_jobs = {}
+    print(new_failure_lines)
+
+
+    for failure_line in new_failure_lines:
+        test_name = clean_test(
+            failure_line.action, failure_line.test, failure_line.signature, failure_line.message
+        )
+        if not test_name:
+            continue
+        job = failure_line.job_log.job
+        config = clean_config(option_map[job.option_collection_hash])
+        platform = clean_platform(job.machine_platform.platform)
+        job_name = job.job_type.name
+        job_symbol = job.job_type.symbol
+        job_group = job.job_group.name
+        job_group_symbol = job.job_group.symbol
+        job.job_key = '{}{}{}{}'.format(config, platform, job_name, job_group)
+        all_failed_jobs[job.id] = job
+        # The 't' ensures the key starts with a character, as required for a query selector
+        test_key = re.sub(
+            r'\W+', '', 't{}{}{}{}{}'.format(test_name, config, platform, job_name, job_group)
+        )
+        countPassed = len(list(filter(lambda x: x['result'] == 'success', jobs[job_name])))
+        passFailRatio = (
+            countPassed / countPassed
+            + len(list(filter(lambda x: x['result'] == 'testfailed', jobs[job_name])))
+            if countPassed
+            else 0
+        )
+        isClassifiedIntermittent = any(
+            job['failure_classification_id'] == 4 for job in jobs[job_name]
+        )
+
+        if test_key not in tests:
+            line = {
+                'testName': test_name,
+                'action': failure_line.action.split('_')[0],
+                'jobName': job_name,
+                'jobSymbol': job_symbol,
+                'jobGroup': job_group,
+                'jobGroupSymbol': job_group_symbol,
+                'platform': platform,
+                'config': config,
+                'key': test_key,
+                'jobKey': job.job_key,
+                'suggestedClassification': 'New Failure',
+                'confidence': 0,
+                'tier': job.tier,
+                'failedInParent': False,
+                'passFailRatio': passFailRatio,
+                'isClassifiedIntermittent': isClassifiedIntermittent,
+            }
+            tests[test_key] = line
+
+    # Each line of the sorted list that is returned here represents one test file per platform/
+    # config.  Each line will have at least one failing job, but may have several
+    # passing/failing jobs associated with it.
+    push_failures = sorted(tests.values(), key=lambda k: k['testName'])
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    # failures = get_grouped(push_failures)
+
+    return push_failures

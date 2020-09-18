@@ -14,7 +14,7 @@ from treeherder.model.models import Job, JobType, Push, Repository
 from treeherder.push_health.builds import get_build_failures
 from treeherder.push_health.compare import get_commit_history
 from treeherder.push_health.linting import get_lint_failures
-from treeherder.push_health.tests import get_test_failures, get_test_failure_jobs
+from treeherder.push_health.tests import get_test_failures, get_test_failure_jobs, get_test_failures_ci
 from treeherder.push_health.usage import get_usage
 from treeherder.push_health.utils import job_to_dict
 from treeherder.webapp.api.serializers import PushSerializer
@@ -249,7 +249,7 @@ class PushViewSet(viewsets.ViewSet):
         # return task_dict
 
     @action(detail=False)
-    def health_ci(self, request, project):
+    def health(self, request, project):
         """
         Return a calculated assessment of the health of this push.
         """
@@ -263,24 +263,95 @@ class PushViewSet(viewsets.ViewSet):
 
         mozciPush = MozciPush([revision], repository.name)
         likely_regression_labels = mozciPush.get_likely_regressions('label')
+        jobs, guids = get_test_failure_jobs(push)
+        # likely_regression_labels = [
+        #     "test-windows10-64/debug-gtest-1proc",
+        #     "test-linux1804-64/debug-gtest-1proc",
+        #     "test-linux1804-64-asan/opt-gtest-1proc",
+        #     "test-windows7-32/debug-gtest-1proc",
+        #     "test-android-em-7.0-x86_64/debug-geckoview-gtest-1proc",
+        #     "build-macosx64/debug"
+        # ]
 
-        jobs = Job.objects.filter(
-            job_type__name__in=likely_regression_labels, push=push
-        ).select_related(
-            'job_type', 'machine_platform', 'taskcluster_metadata'
+        commit_history_details = None
+        parent_push = None
+
+        # Parent compare only supported for Hg at this time.
+        # Bug https://bugzilla.mozilla.org/show_bug.cgi?id=1612645
+        if repository.dvcs_type == 'hg':
+            commit_history_details = get_commit_history(repository, revision, push)
+            if commit_history_details['exactMatch']:
+                parent_push = commit_history_details.pop('parentPush')
+
+        likely_regression_tests = get_test_failures_ci(jobs, guids)
+        known_issues_tests = []
+
+        test_result = 'pass'
+        if len(likely_regression_labels):
+            test_result = 'fail'
+
+        build_failures = get_build_failures(push, parent_push)
+        build_result = 'fail' if len(build_failures) else 'pass'
+
+        lint_failures = get_lint_failures(push)
+        lint_result = 'fail' if len(lint_failures) else 'pass'
+
+        push_result = 'pass'
+        for metric_result in [test_result, lint_result, build_result]:
+            if metric_result == 'indeterminate' and push_result != 'fail':
+                push_result = metric_result
+            elif metric_result == 'fail':
+                push_result = metric_result
+
+        newrelic.agent.record_custom_event(
+            'push_health_need_investigation',
+            {
+                'revision': revision,
+                'repo': repository.name,
+                'needInvestigation': len(likely_regression_labels),
+                'author': push.author,
+            },
         )
-        job_objs = [job_to_dict(job) for job in jobs]
 
-        resp = {
-            'likely': likely_regression_labels,
-            'jobs': job_objs,
-        }
-
-        return Response(resp)
+        return Response(
+            {
+                'revision': revision,
+                'id': push.id,
+                'result': push_result,
+                'jobs': jobs,
+                'labels': likely_regression_labels,
+                'metrics': {
+                    'commitHistory': {
+                        'name': 'Commit History',
+                        'result': 'none',
+                        'details': commit_history_details,
+                    },
+                    'linting': {
+                        'name': 'Linting',
+                        'result': lint_result,
+                        'details': lint_failures,
+                    },
+                    'tests': {
+                        'name': 'Tests',
+                        'result': test_result,
+                        'details': {
+                            'needInvestigation': likely_regression_tests,
+                            'knownIssues': known_issues_tests,
+                        },
+                    },
+                    'builds': {
+                        'name': 'Builds',
+                        'result': build_result,
+                        'details': build_failures,
+                    },
+                },
+                'status': push.get_status(),
+            }
+        )
 
 
     @action(detail=False)
-    def health(self, request, project):
+    def health_old(self, request, project):
         """
         Return a calculated assessment of the health of this push.
         """
